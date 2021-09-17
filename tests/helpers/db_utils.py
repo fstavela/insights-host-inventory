@@ -11,6 +11,7 @@ from app.models import Host
 from app.serialization import serialize_host
 from app.utils import HostWrapper
 from lib.host_repository import find_existing_host
+from lib.host_repository import find_existing_host_by_id
 from tests.helpers.test_utils import generate_uuid
 from tests.helpers.test_utils import now
 from tests.helpers.test_utils import USER_IDENTITY
