@@ -1,6 +1,8 @@
+
 from copy import deepcopy
 from random import choice
 from random import randint
+# from unittest import mock
 from unittest import mock
 
 import pytest
@@ -18,6 +20,10 @@ from tests.helpers.db_utils import minimal_db_host
 from tests.helpers.test_utils import generate_random_string
 from tests.helpers.test_utils import generate_uuid
 from tests.helpers.test_utils import get_staleness_timestamps
+from host_delete_duplicates import run as host_delete_duplicates_run
+from lib.db import multi_session_guard
+from tests.helpers.db_utils import minimal_db_host
+from tests.helpers.test_utils import generate_uuid
 
 ELEVATED_IDS = ("provider_id", "insights_id", "subscription_manager_id")
 CANONICAL_FACTS = ("fqdn", "satellite_id", "bios_uuid", "ip_addresses", "mac_addresses")
@@ -52,7 +58,7 @@ def test_delete_duplicate_host(event_producer_mock, db_create_host, db_get_host,
     hosts_session = Session()
     misc_session = Session()
 
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    with multi_session_guard([accounts_session, hosts_session, misc_session]):
         num_deleted = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
@@ -65,11 +71,6 @@ def test_delete_duplicate_host(event_producer_mock, db_create_host, db_get_host,
 
     print("deleted this many hosts:")
     print(num_deleted)
-
-    # force the db session to re-fetch hosts from the database
-    # necessary because the deletions took place in another session
-    # the existing db.session session map is out of date
-    db.session.expunge_all()
 
     assert num_deleted == 1
     assert db_get_host(created_new_host.id)
@@ -104,7 +105,7 @@ def test_delete_dupe_more_hosts_than_chunk_size(
     created_new_host_1 = db_create_host(host=new_host_1)
 
     # create big chunk of hosts
-    created_hosts = db_create_multiple_hosts(how_many=num_hosts)
+    db_create_multiple_hosts(how_many=num_hosts)
 
     # create another host after
     old_host_2 = minimal_db_host(canonical_facts=canonical_facts_2)
@@ -124,7 +125,7 @@ def test_delete_dupe_more_hosts_than_chunk_size(
     hosts_session = Session()
     misc_session = Session()
 
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    with multi_session_guard([accounts_session, hosts_session, misc_session]):
         num_deleted = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
@@ -135,8 +136,6 @@ def test_delete_dupe_more_hosts_than_chunk_size(
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
     assert num_deleted == 2
-
-    db.session.expunge_all()
 
     assert db_get_host(created_new_host_1.id)
     assert not db_get_host(created_old_host_1.id)
@@ -158,7 +157,7 @@ def test_no_hosts_delete_when_no_dupes(event_producer_mock, db_get_host, db_crea
     hosts_session = Session()
     misc_session = Session()
 
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    with multi_session_guard([accounts_session, hosts_session, misc_session]):
         num_deleted = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
@@ -169,8 +168,6 @@ def test_no_hosts_delete_when_no_dupes(event_producer_mock, db_get_host, db_crea
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
     assert num_deleted == 0
-
-    db.session.expunge_all()
 
     for id in created_host_ids:
         assert db_get_host(id)
@@ -235,17 +232,13 @@ def test_delete_duplicates_customer_scenario_1(
     assert db_get_host(created_host5.id)
 
     Session = _init_db(inventory_config)
-    accounts_session = Session()
-    hosts_session = Session()
-    misc_session = Session()
+    sessions = [Session() for _ in range(3)]
 
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    with multi_session_guard(sessions):
         deleted_hosts_count = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
-            accounts_session,
-            hosts_session,
-            misc_session,
+            *sessions,
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
@@ -297,17 +290,13 @@ def test_delete_duplicates_customer_scenario_2(
     assert db_get_host(created_host3.id)
 
     Session = _init_db(inventory_config)
-    accounts_session = Session()
-    hosts_session = Session()
-    misc_session = Session()
+    sessions = [Session() for _ in range(3)]
 
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    with multi_session_guard(sessions):
         deleted_hosts_count = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
-            accounts_session,
-            hosts_session,
-            misc_session,
+            *sessions,
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
@@ -369,16 +358,12 @@ def test_delete_duplicates_elevated_ids_matching(
         assert db_get_host(host.id)
 
     Session = _init_db(inventory_config)
-    accounts_session = Session()
-    hosts_session = Session()
-    misc_session = Session()
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    sessions = [Session() for _ in range(3)]
+    with multi_session_guard(sessions):
         deleted_hosts_count = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
-            accounts_session,
-            hosts_session,
-            misc_session,
+            *sessions,
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
@@ -436,16 +421,12 @@ def test_delete_duplicates_elevated_ids_not_matching(
         assert db_get_host(host.id)
 
     Session = _init_db(inventory_config)
-    accounts_session = Session()
-    hosts_session = Session()
-    misc_session = Session()
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    sessions = [Session() for _ in range(3)]
+    with multi_session_guard(sessions):
         deleted_hosts_count = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
-            accounts_session,
-            hosts_session,
-            misc_session,
+            *sessions,
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
@@ -495,16 +476,12 @@ def test_delete_duplicates_without_elevated_matching(
         assert db_get_host(host.id)
 
     Session = _init_db(inventory_config)
-    accounts_session = Session()
-    hosts_session = Session()
-    misc_session = Session()
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    sessions = [Session() for _ in range(3)]
+    with multi_session_guard(sessions):
         deleted_hosts_count = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
-            accounts_session,
-            hosts_session,
-            misc_session,
+            *sessions,
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
@@ -572,16 +549,12 @@ def test_delete_duplicates_without_elevated_not_matching(
         assert db_get_host(host.id)
 
     Session = _init_db(inventory_config)
-    accounts_session = Session()
-    hosts_session = Session()
-    misc_session = Session()
-    with session_guard(accounts_session), session_guard(hosts_session), session_guard(misc_session):
+    sessions = [Session() for _ in range(3)]
+    with multi_session_guard(sessions):
         deleted_hosts_count = host_delete_duplicates_run(
             inventory_config,
             mock.Mock(),
-            accounts_session,
-            hosts_session,
-            misc_session,
+            *sessions,
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
