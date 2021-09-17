@@ -1,8 +1,6 @@
-
 from copy import deepcopy
 from random import choice
 from random import randint
-# from unittest import mock
 from unittest import mock
 
 import pytest
@@ -15,15 +13,11 @@ from app.models import ProviderType
 from host_delete_duplicates import _init_db as _init_db
 from host_delete_duplicates import main as host_delete_duplicates_main
 from host_delete_duplicates import run as host_delete_duplicates_run
-from lib.db import session_guard
+from lib.db import multi_session_guard
 from tests.helpers.db_utils import minimal_db_host
 from tests.helpers.test_utils import generate_random_string
 from tests.helpers.test_utils import generate_uuid
 from tests.helpers.test_utils import get_staleness_timestamps
-from host_delete_duplicates import run as host_delete_duplicates_run
-from lib.db import multi_session_guard
-from tests.helpers.db_utils import minimal_db_host
-from tests.helpers.test_utils import generate_uuid
 
 ELEVATED_IDS = ("provider_id", "insights_id", "subscription_manager_id")
 CANONICAL_FACTS = ("fqdn", "satellite_id", "bios_uuid", "ip_addresses", "mac_addresses")
@@ -233,7 +227,6 @@ def test_delete_duplicates_customer_scenario_1(
 
     Session = _init_db(inventory_config)
     sessions = [Session() for _ in range(3)]
-
     with multi_session_guard(sessions):
         deleted_hosts_count = host_delete_duplicates_run(
             inventory_config,
@@ -242,7 +235,7 @@ def test_delete_duplicates_customer_scenario_1(
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
-    db.session.expunge_all()
+
     assert deleted_hosts_count == 4
     assert not db_get_host(created_host1.id)
     assert not db_get_host(created_host2.id)
@@ -291,7 +284,6 @@ def test_delete_duplicates_customer_scenario_2(
 
     Session = _init_db(inventory_config)
     sessions = [Session() for _ in range(3)]
-
     with multi_session_guard(sessions):
         deleted_hosts_count = host_delete_duplicates_run(
             inventory_config,
@@ -300,7 +292,6 @@ def test_delete_duplicates_customer_scenario_2(
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
-    db.session.expunge_all()
     assert deleted_hosts_count == 2
     assert not db_get_host(created_host1.id)
     assert not db_get_host(created_host2.id)
@@ -367,7 +358,6 @@ def test_delete_duplicates_elevated_ids_matching(
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
-    db.session.expunge_all()
 
     assert deleted_hosts_count == host_count * 3 - 1
     for i in range(len(created_hosts) - 1):
@@ -430,7 +420,6 @@ def test_delete_duplicates_elevated_ids_not_matching(
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
-    db.session.expunge_all()
 
     assert deleted_hosts_count == 0
     for host in created_hosts:
@@ -485,7 +474,6 @@ def test_delete_duplicates_without_elevated_matching(
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
-    db.session.expunge_all()
 
     # Issue with missing elevated ID
     # assert deleted_hosts_count == host_count + len(canonical_facts) + len(ELEVATED_IDS) - 1
@@ -558,7 +546,6 @@ def test_delete_duplicates_without_elevated_not_matching(
             event_producer,
             shutdown_handler=mock.Mock(**{"shut_down.return_value": False}),
         )
-    db.session.expunge_all()
 
     assert deleted_hosts_count == 0
     for host in created_hosts:
