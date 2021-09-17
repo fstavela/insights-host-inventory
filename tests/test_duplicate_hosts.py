@@ -1,25 +1,25 @@
-import pytest
 from unittest import mock
-from app.logging import get_logger
-from app.models import ProviderType
+
+import pytest
+
 from app import db
 from app import threadctx
 from app import UNKNOWN_REQUEST_ID_VALUE
-from host_delete_duplicates import run as host_delete_duplicates_run
-from host_delete_duplicates import main as host_delete_duplicates_main
+from app.logging import get_logger
+from app.models import ProviderType
 from host_delete_duplicates import _init_db as _init_db
-from tests.helpers.db_utils import minimal_db_host
-from tests.helpers.test_utils import get_staleness_timestamps
-from tests.helpers.test_utils import generate_uuid
+from host_delete_duplicates import main as host_delete_duplicates_main
+from host_delete_duplicates import run as host_delete_duplicates_run
 from lib.db import session_guard
+from tests.helpers.db_utils import minimal_db_host
+from tests.helpers.test_utils import generate_uuid
+from tests.helpers.test_utils import get_staleness_timestamps
 
 logger = get_logger(__name__)
 
 
 @pytest.mark.host_delete_duplicates
-def test_delete_duplicate_host(
-    event_producer_mock, db_create_host, db_get_host, inventory_config,
-):
+def test_delete_duplicate_host(event_producer_mock, db_create_host, db_get_host, inventory_config):
     print("reunning sdas")
 
     # make two hosts that are the same
@@ -29,8 +29,8 @@ def test_delete_duplicate_host(
         "insights_id": generate_uuid(),
         "subscription_manager_id": generate_uuid(),
     }
-    old_host = minimal_db_host(canonical_facts = canonical_facts)
-    new_host = minimal_db_host(canonical_facts = canonical_facts)
+    old_host = minimal_db_host(canonical_facts=canonical_facts)
+    new_host = minimal_db_host(canonical_facts=canonical_facts)
 
     created_old_host = db_create_host(host=old_host)
     created_new_host = db_create_host(host=new_host)
@@ -71,8 +71,9 @@ def test_delete_duplicate_host(
 
 
 @pytest.mark.host_delete_duplicates
-def test_delete_dupe_more_hosts_than_chunk_size(event_producer_mock, db_get_host, db_create_multiple_hosts,
-                                                db_create_host, inventory_config):
+def test_delete_dupe_more_hosts_than_chunk_size(
+    event_producer_mock, db_get_host, db_create_multiple_hosts, db_create_host, inventory_config
+):
     canonical_facts_1 = {
         "provider_id": generate_uuid(),
         "insights_id": generate_uuid(),
@@ -89,12 +90,8 @@ def test_delete_dupe_more_hosts_than_chunk_size(event_producer_mock, db_get_host
 
     # create host before big chunk. Hosts are ordered by modified date so creation
     # order is important
-    old_host_1 = minimal_db_host(
-        canonical_facts=canonical_facts_1
-    )
-    new_host_1 = minimal_db_host(
-        canonical_facts=canonical_facts_1
-    )
+    old_host_1 = minimal_db_host(canonical_facts=canonical_facts_1)
+    new_host_1 = minimal_db_host(canonical_facts=canonical_facts_1)
 
     created_old_host_1 = db_create_host(host=old_host_1)
 
@@ -104,12 +101,8 @@ def test_delete_dupe_more_hosts_than_chunk_size(event_producer_mock, db_get_host
     created_hosts = db_create_multiple_hosts(how_many=num_hosts)
 
     # create another host after
-    old_host_2 = minimal_db_host(
-        canonical_facts=canonical_facts_2
-    )
-    new_host_2 = minimal_db_host(
-        canonical_facts=canonical_facts_2
-    )
+    old_host_2 = minimal_db_host(canonical_facts=canonical_facts_2)
+    new_host_2 = minimal_db_host(canonical_facts=canonical_facts_2)
 
     created_old_host_2 = db_create_host(host=old_host_2)
 
@@ -178,7 +171,9 @@ def test_no_hosts_delete_when_no_dupes(event_producer_mock, db_get_host, db_crea
 
 
 @pytest.mark.host_delete_duplicates
-def test_delete_duplicates_customer_scenario_1(event_producer, kafka_producer, db_create_host, db_get_host, inventory_config):
+def test_delete_duplicates_customer_scenario_1(
+    event_producer, kafka_producer, db_create_host, db_get_host, inventory_config
+):
     # deleted_hosts_count = host_delete_duplicates_run(
     #     inventory_config,
     #     mock.Mock(),
@@ -199,12 +194,12 @@ def test_delete_duplicates_customer_scenario_1(event_producer, kafka_producer, d
         "satellite_id": rhsm_id,
         "fqdn": "rn001018",
         "ip_addresses": ["10.230.230.3"],
-        "mac_addresses": ["00:50:56:ab:5a:22", "00:00:00:00:00:00"]
+        "mac_addresses": ["00:50:56:ab:5a:22", "00:00:00:00:00:00"],
     }
     host_data = {
         "stale_timestamp": staleness_timestamps["stale_warning"],
         "reporter": "puptoo",
-        "canonical_facts": canonical_facts
+        "canonical_facts": canonical_facts,
     }
     host1 = minimal_db_host(**host_data)
     created_host1 = db_create_host(host=host1)
@@ -297,7 +292,9 @@ def test_delete_duplicates_customer_scenario_1(event_producer, kafka_producer, d
 
 
 @pytest.mark.host_delete_duplicates
-def test_delete_duplicates_customer_scenario_2(event_producer, kafka_producer, db_create_host, db_get_host, inventory_config):
+def test_delete_duplicates_customer_scenario_2(
+    event_producer, kafka_producer, db_create_host, db_get_host, inventory_config
+):
     staleness_timestamps = get_staleness_timestamps()
 
     rhsm_id = generate_uuid()
@@ -309,12 +306,12 @@ def test_delete_duplicates_customer_scenario_2(event_producer, kafka_producer, d
         "satellite_id": rhsm_id,
         "fqdn": "rozrhjrad01.base.srvco.net",
         "ip_addresses": ["10.230.230.10", "10.230.230.13"],
-        "mac_addresses": ["00:50:56:ac:56:45", "00:50:56:ac:48:61", "00:00:00:00:00:00"]
+        "mac_addresses": ["00:50:56:ac:56:45", "00:50:56:ac:48:61", "00:00:00:00:00:00"],
     }
     host_data = {
         "stale_timestamp": staleness_timestamps["stale_warning"],
         "reporter": "puptoo",
-        "canonical_facts": canonical_facts
+        "canonical_facts": canonical_facts,
     }
     host1 = minimal_db_host(**host_data)
     created_host1 = db_create_host(host=host1)
