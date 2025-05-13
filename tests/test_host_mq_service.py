@@ -296,7 +296,7 @@ def test_handle_message_unicode_not_damaged(
                 mocker.MagicMock(),
             )
             ingress_message_consumer_mock.handle_message(message)
-            process_message_mock.assert_called_once_with(json.loads(message)["data"], mocker.ANY, {})
+            process_message_mock.assert_called_once_with(json.loads(message)["data"], mocker.ANY, {}, None)
 
 
 def test_handle_message_verify_metadata_pass_through(mq_create_or_update_host):

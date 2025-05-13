@@ -5,6 +5,8 @@ import json
 import sys
 from copy import deepcopy
 from functools import partial
+from typing import Any
+from typing import Callable
 from uuid import UUID
 
 from confluent_kafka import Consumer
@@ -58,6 +60,7 @@ from app.serialization import deserialize_host
 from app.serialization import remove_null_canonical_facts
 from app.serialization import serialize_group
 from app.serialization import serialize_host
+from app.staleness_serialization import AttrDict
 from lib import group_repository
 from lib import host_repository
 from lib.db import session_guard
@@ -102,7 +105,15 @@ class DebeziumEnvelopeSchema(Schema):
 
 # Helper class to facilitate batch operations
 class OperationResult:
-    def __init__(self, hr, pm, st, so, et, sl):
+    def __init__(
+        self,
+        hr: Host,
+        pm: dict[str, Any] | None,
+        st: Timestamps | None,
+        so: AttrDict | None,
+        et: EventType | None,
+        sl: Callable,
+    ):
         self.host_row = hr
         self.platform_metadata = pm
         self.staleness_timestamps = st
@@ -158,7 +169,7 @@ class HBIMessageConsumerBase:
                             logger.debug("Message received")
 
                             try:
-                                processed_rows.append(self.handle_message(msg.value()))
+                                processed_rows.append(self.handle_message(msg.value(), processed_rows))
                                 metrics.consumed_message_size.observe(len(str(msg).encode("utf-8")))
                                 metrics.ingress_message_handler_success.inc()
                             except OperationalError as oe:
@@ -177,7 +188,7 @@ class HBIMessageConsumerBase:
 
 class WorkspaceMessageConsumer(HBIMessageConsumerBase):
     @metrics.ingress_message_handler_time.time()
-    def handle_message(self, message):
+    def handle_message(self, message: str | bytes, _processed_rows: list[OperationResult] | None = None):
         payload_schema = parse_operation_message(message, DebeziumEnvelopeSchema)
         validated_operation_msg = parse_operation_message(payload_schema["payload"], WorkspaceOperationSchema)
         initialize_thread_local_storage(None)  # No request_id for workspace MQ
@@ -229,7 +240,9 @@ class WorkspaceMessageConsumer(HBIMessageConsumerBase):
 
 class HostMessageConsumer(HBIMessageConsumerBase):
     @metrics.ingress_message_handler_time.time()
-    def handle_message(self, message) -> OperationResult:
+    def handle_message(
+        self, message: str | bytes, processed_rows: list[OperationResult] | None = None
+    ) -> OperationResult:
         validated_operation_msg = parse_operation_message(message, HostOperationSchema)
         platform_metadata = validated_operation_msg.get("platform_metadata", {})
 
@@ -244,7 +257,7 @@ class HostMessageConsumer(HBIMessageConsumerBase):
             try:
                 host = validated_operation_msg["data"]
                 host_row, operation_result, identity, success_logger = self.process_message(
-                    host, platform_metadata, validated_operation_msg.get("operation_args", {})
+                    host, platform_metadata, validated_operation_msg.get("operation_args", {}), processed_rows
                 )
                 staleness_timestamps = Timestamps.from_config(inventory_config())
                 event_type = operation_results_to_event_type(operation_result)
@@ -298,7 +311,13 @@ class HostMessageConsumer(HBIMessageConsumerBase):
 
 
 class IngressMessageConsumer(HostMessageConsumer):
-    def process_message(self, host_data, platform_metadata, operation_args=None):
+    def process_message(
+        self,
+        host_data: dict[str, Any],
+        platform_metadata: dict[str, Any],
+        operation_args: dict[str, Any] | None = None,
+        processed_rows: list[OperationResult] | None = None,
+    ) -> tuple[Host, host_repository.AddHostResult, Identity, Callable]:
         if operation_args is None:
             operation_args = {}
 
@@ -312,7 +331,15 @@ class IngressMessageConsumer(HostMessageConsumer):
                 input_host = _set_owner(input_host, identity)
 
             log_add_host_attempt(logger, input_host, sp_fields_to_log, identity)
-            host_row, add_result = host_repository.add_host(input_host, identity, operation_args=operation_args)
+            existing_host = None
+            if processed_rows:
+                processed_hosts = [result.host_row for result in processed_rows]
+                existing_host = host_repository.find_existing_host(
+                    identity, input_host.canonical_facts, processed_hosts
+                )
+            host_row, add_result = host_repository.add_host(
+                input_host, identity, operation_args=operation_args, existing_host=existing_host
+            )
 
             # If this is a new host, assign it to the "ungrouped hosts" group/workspace
             if add_result == host_repository.AddHostResult.created and get_flag_value(
@@ -345,7 +372,13 @@ class IngressMessageConsumer(HostMessageConsumer):
 
 
 class SystemProfileMessageConsumer(HostMessageConsumer):
-    def process_message(self, host_data, platform_metadata, operation_args=None):  # noqa: ARG002, required by process_message
+    def process_message(
+        self,
+        host_data: dict[str, Any],
+        platform_metadata: dict[str, Any],  # noqa: ARG002, required by process_message
+        operation_args: dict[str, Any] | None = None,
+        _processed_rows: list[OperationResult] | None = None,
+    ) -> tuple[Host, host_repository.AddHostResult, Identity, Callable]:
         if operation_args is None:
             operation_args = {}
 
@@ -470,7 +503,7 @@ def _validate_json_object_for_utf8(json_object):
 
 
 @metrics.ingress_message_parsing_time.time()
-def parse_operation_message(message, schema: Schema):
+def parse_operation_message(message: str | bytes, schema: type[Schema]):
     parsed_message = common_message_parser(message)
 
     try:
@@ -548,6 +581,11 @@ def write_delete_event_message(event_producer: EventProducer, result: OperationR
 def write_add_update_event_message(
     event_producer: EventProducer, notification_event_producer: EventProducer, result: OperationResult
 ):
+    if result.event_type is None or result.platform_metadata is None:
+        # This should never happen, but OperationResult allows None values for these fields.
+        logger.error("Invalid operation result. Event type and platform metadata must be provided.")
+        raise ValueError("Event type and platform metadata must be provided.")
+
     # The request ID in the headers is fetched from threadctx.request_id
     request_id = result.platform_metadata.get("request_id")
     initialize_thread_local_storage(request_id, result.host_row.org_id, result.host_row.account)
@@ -613,7 +651,7 @@ def write_message_batch(
                 logger.exception("Error while producing message", exc_info=exc)
 
 
-def initialize_thread_local_storage(request_id: str, org_id: str | None = None, account: str | None = None):
+def initialize_thread_local_storage(request_id: str | None, org_id: str | None = None, account: str | None = None):
     threadctx.request_id = request_id
     if org_id:
         threadctx.org_id = org_id
