@@ -134,6 +134,7 @@ class HBIMessageConsumerBase:
         self.flask_app = flask_app
         self.event_producer = event_producer
         self.notification_event_producer = notification_event_producer
+        self.processed_rows: list[OperationResult] = []
 
     def process_message(self, *args, **kwargs):
         raise NotImplementedError("Not implemented in the HBIMessageConsumerBase class")
@@ -142,13 +143,13 @@ class HBIMessageConsumerBase:
     def handle_message(self, *args, **kwargs) -> OperationResult | None:
         raise NotImplementedError("Not implemented in the HBIMessageConsumerBase class")
 
-    def post_process_rows(self, processed_rows: list[OperationResult]):
+    def post_process_rows(self):
         pass  # No action is taken by default
 
     def event_loop(self, interrupt):
         with self.flask_app.app.app_context():
             while not interrupt():
-                processed_rows: list[OperationResult] = []
+                self.processed_rows = []
                 with session_guard(db.session), db.session.no_autoflush:
                     messages = self.consumer.consume(
                         num_messages=inventory_config().mq_db_batch_max_messages,
@@ -169,7 +170,7 @@ class HBIMessageConsumerBase:
                             logger.debug("Message received")
 
                             try:
-                                processed_rows.append(self.handle_message(msg.value(), processed_rows))
+                                self.processed_rows.append(self.handle_message(msg.value()))
                                 metrics.consumed_message_size.observe(len(str(msg).encode("utf-8")))
                                 metrics.ingress_message_handler_success.inc()
                             except OperationalError as oe:
@@ -183,12 +184,12 @@ class HBIMessageConsumerBase:
                                 metrics.ingress_message_handler_failure.inc()
                                 logger.exception("Unable to process message", extra={"incoming_message": msg.value()})
 
-                    self.post_process_rows(processed_rows)
+                    self.post_process_rows()
 
 
 class WorkspaceMessageConsumer(HBIMessageConsumerBase):
     @metrics.ingress_message_handler_time.time()
-    def handle_message(self, message: str | bytes, _processed_rows: list[OperationResult] | None = None):
+    def handle_message(self, message: str | bytes):
         payload_schema = parse_operation_message(message, DebeziumEnvelopeSchema)
         validated_operation_msg = parse_operation_message(payload_schema["payload"], WorkspaceOperationSchema)
         initialize_thread_local_storage(None)  # No request_id for workspace MQ
@@ -240,9 +241,7 @@ class WorkspaceMessageConsumer(HBIMessageConsumerBase):
 
 class HostMessageConsumer(HBIMessageConsumerBase):
     @metrics.ingress_message_handler_time.time()
-    def handle_message(
-        self, message: str | bytes, processed_rows: list[OperationResult] | None = None
-    ) -> OperationResult:
+    def handle_message(self, message: str | bytes) -> OperationResult:
         validated_operation_msg = parse_operation_message(message, HostOperationSchema)
         platform_metadata = validated_operation_msg.get("platform_metadata", {})
 
@@ -257,7 +256,7 @@ class HostMessageConsumer(HBIMessageConsumerBase):
             try:
                 host = validated_operation_msg["data"]
                 host_row, operation_result, identity, success_logger = self.process_message(
-                    host, platform_metadata, validated_operation_msg.get("operation_args", {}), processed_rows
+                    host, platform_metadata, validated_operation_msg.get("operation_args", {})
                 )
                 staleness_timestamps = Timestamps.from_config(inventory_config())
                 event_type = operation_results_to_event_type(operation_result)
@@ -293,18 +292,18 @@ class HostMessageConsumer(HBIMessageConsumerBase):
                 )
                 raise
 
-    def post_process_rows(self, processed_rows: list[OperationResult]) -> None:
+    def post_process_rows(self) -> None:
         try:
-            if len(processed_rows) > 0:
+            if len(self.processed_rows) > 0:
                 db.session.commit()
                 # The above session is automatically committed or rolled back.
                 # Now we need to send out messages for the batch of hosts we just processed.
-                write_message_batch(self.event_producer, self.notification_event_producer, processed_rows)
+                write_message_batch(self.event_producer, self.notification_event_producer, self.processed_rows)
 
         except StaleDataError as exc:
-            metrics.ingress_message_handler_failure.inc(amount=len(processed_rows))
+            metrics.ingress_message_handler_failure.inc(amount=len(self.processed_rows))
             logger.error(
-                f"Session data is stale; failed to commit data from {len(processed_rows)} payloads.",
+                f"Session data is stale; failed to commit data from {len(self.processed_rows)} payloads.",
                 exc_info=exc,
             )
             db.session.rollback()
@@ -316,7 +315,6 @@ class IngressMessageConsumer(HostMessageConsumer):
         host_data: dict[str, Any],
         platform_metadata: dict[str, Any],
         operation_args: dict[str, Any] | None = None,
-        processed_rows: list[OperationResult] | None = None,
     ) -> tuple[Host, host_repository.AddHostResult, Identity, Callable]:
         if operation_args is None:
             operation_args = {}
@@ -332,8 +330,8 @@ class IngressMessageConsumer(HostMessageConsumer):
 
             log_add_host_attempt(logger, input_host, sp_fields_to_log, identity)
             existing_host = None
-            if processed_rows:
-                processed_hosts = [result.host_row for result in processed_rows]
+            if self.processed_rows:
+                processed_hosts = [result.host_row for result in self.processed_rows]
                 existing_host = host_repository.find_existing_host(
                     identity, input_host.canonical_facts, processed_hosts
                 )
@@ -377,7 +375,6 @@ class SystemProfileMessageConsumer(HostMessageConsumer):
         host_data: dict[str, Any],
         platform_metadata: dict[str, Any],  # noqa: ARG002, required by process_message
         operation_args: dict[str, Any] | None = None,
-        _processed_rows: list[OperationResult] | None = None,
     ) -> tuple[Host, host_repository.AddHostResult, Identity, Callable]:
         if operation_args is None:
             operation_args = {}
