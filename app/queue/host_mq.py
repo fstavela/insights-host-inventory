@@ -256,7 +256,7 @@ class HostMessageConsumer(HBIMessageConsumerBase):
             try:
                 host = validated_operation_msg["data"]
                 host_row, operation_result, identity, success_logger = self.process_message(
-                    host, platform_metadata, validated_operation_msg.get("operation_args", {})
+                    host, platform_metadata, validated_operation_msg.get("operation_args", {}), processed_rows
                 )
                 staleness_timestamps = Timestamps.from_config(inventory_config())
                 event_type = operation_results_to_event_type(operation_result)
